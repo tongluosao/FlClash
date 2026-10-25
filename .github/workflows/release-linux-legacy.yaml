@@ -55,6 +55,38 @@ jobs:
         with:
           submodules: recursive
 
+      # The sqlite3 package downloads a prebuilt libsqlite3.so that references glibc
+      # 2.33 symbols, which is above the 2.31 this image provides, so the app died on
+      # the first database call. Its build hook can compile the amalgamation instead:
+      # `source` is set for Linux only, so every other platform keeps the upstream
+      # prebuilt, and the sources are fetched here rather than pinned in the pubspec,
+      # where an absolute path would break the other builds.
+      - name: Build SQLite against this glibc
+        shell: bash
+        env:
+          SQLITE_AMALGAMATION: sqlite-amalgamation-3540100.zip
+          SQLITE_SOURCES: /opt/sqlite-src
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o /tmp/sqlite-amalgamation.zip \
+            "https://sqlite.org/2026/$SQLITE_AMALGAMATION"
+          unzip -q -o /tmp/sqlite-amalgamation.zip -d /opt
+          mkdir -p "$SQLITE_SOURCES"
+          mv "/opt/${SQLITE_AMALGAMATION%.zip}"/* "$SQLITE_SOURCES"
+          test -f "$SQLITE_SOURCES/sqlite3.c"
+
+          cat > /tmp/sqlite-defines.yaml <<'EOF'
+              sqlite3:
+                source:
+                  linux: source
+                path: /opt/sqlite-src/sqlite3.c
+                additional_includes:
+                  - /opt/sqlite-src
+          EOF
+          sed -i '/^  user_defines:$/r /tmp/sqlite-defines.yaml' pubspec.yaml
+          grep -c 'path: /opt/sqlite-src/sqlite3.c' pubspec.yaml
+          sed -n '8,22p' pubspec.yaml
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -138,6 +170,32 @@ jobs:
 
       - name: Setup
         run: dart setup.dart linux ${{ env.IS_STABLE == 'true' && '--env stable' || '' }} -v
+
+      # A dependency that raises the glibc floor only fails on the user's machine,
+      # after the release is out, so the bundle is checked against 2.31 here.
+      - name: Verify the glibc floor
+        shell: bash
+        run: |
+          set -euo pipefail
+          floor=2.31
+          status=0
+          checked=0
+          while IFS= read -r library; do
+            highest=$(readelf --version-info "$library" 2>/dev/null |
+              grep -o 'GLIBC_[0-9]\+\.[0-9]\+' | sed 's/^GLIBC_//' | sort -uV | tail -n 1)
+            [ -n "$highest" ] || continue
+            checked=$((checked + 1))
+            if [ "$(printf '%s\n%s\n' "$highest" "$floor" | sort -V | tail -n 1)" != "$floor" ]; then
+              echo "FAIL $(basename "$library") needs GLIBC_$highest"
+              status=1
+            fi
+          done < <(find build -path '*release/bundle*' -name '*.so*' -type f)
+          if [ "$checked" -eq 0 ]; then
+            echo 'nothing was inspected: the bundle is not where it was expected'
+            exit 1
+          fi
+          echo "checked $checked libraries against GLIBC_$floor"
+          exit "$status"
 
       - name: Suffix the packages
         shell: bash
