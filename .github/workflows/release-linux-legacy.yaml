@@ -86,23 +86,37 @@ jobs:
           flutter --version
           flutter pub get
 
-      # app_links_linux initializes a g_autoptr from g_steal_pointer, whose typed
-      # form arrived in glib 2.66; 20.04 ships 2.64. The cast keeps the ownership
-      # transfer the cleanup attribute expects.
-      - name: Patch app_links for glib 2.64
+      # The plugins are written against glib 2.66+/2.70+ while 20.04 ships 2.64:
+      # g_steal_pointer keeps the pointer type for C++ only from 2.66, and
+      # g_spawn_check_wait_status is the 2.70 rename of g_spawn_check_exit_status.
+      # Both are compile-time only, so patching the headers keeps the runtime
+      # dependency at whatever 20.04 provides.
+      - name: Teach glib 2.64 the newer plumbing
         shell: bash
         run: |
           set -euo pipefail
-          patched=0
-          for cache in "${PUB_CACHE:-}" "$HOME/.pub-cache" /root/.pub-cache; do
-            [ -n "$cache" ] && [ -d "$cache" ] || continue
-            while IFS= read -r file; do
-              sed -i 's|g_autoptr(GPtrArray) links = g_steal_pointer(|g_autoptr(GPtrArray) links = (GPtrArray*) g_steal_pointer(|' "$file"
-              grep -q '(GPtrArray\*) g_steal_pointer' "$file"
-              patched=$((patched + 1))
-            done < <(find "$cache" -path '*app_links_linux-*/linux/app_links_plugin_linux.cc' -type f)
-          done
-          [ "$patched" -gt 0 ] || { echo 'app_links_linux source not found in the pub cache'; exit 1; }
+          steal_header=$(grep -rl 'define g_steal_pointer' /usr/include/glib-2.0 | head -n 1)
+          [ -n "$steal_header" ] || { echo 'no header defines g_steal_pointer'; exit 1; }
+          cat >> "$steal_header" <<'EOF'
+
+          #ifdef __cplusplus
+          template <typename T>
+          static inline T * flclash_steal_pointer (T **pp)
+          {
+            T *ret = *pp;
+            *pp = NULL;
+            return ret;
+          }
+          #undef g_steal_pointer
+          #define g_steal_pointer(pp) flclash_steal_pointer (pp)
+          #endif
+          EOF
+          cat >> /usr/include/glib-2.0/glib/gspawn.h <<'EOF'
+
+          #define g_spawn_check_wait_status(status, error) g_spawn_check_exit_status (status, error)
+          EOF
+          grep -c flclash_steal_pointer "$steal_header"
+          grep -c g_spawn_check_wait_status /usr/include/glib-2.0/glib/gspawn.h
 
       # The core embeds this bundle and FlClashHttpOverrides.trustCoreRoots loads it for Dart.
       # Pinned by hash, so a new bundle from https://curl.se/docs/caextract.html is a reviewed bump.
