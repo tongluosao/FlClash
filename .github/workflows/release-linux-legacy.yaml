@@ -1,0 +1,141 @@
+name: release-linux-legacy
+
+# GitHub retired the hosted `ubuntu-20.04` label in April 2025, so a glibc 2.31
+# package is produced inside a 20.04 container on ubuntu-latest instead. It stays
+# out of build.yaml because that release job only publishes from chen08209/FlClash
+# and waits on the whole check suite, which a fork does not carry (its changelog
+# tags are missing). The assets are suffixed, so they land beside the regular
+# release files of the same tag.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag whose release receives the packages; empty builds only
+        required: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FLUTTER_VERSION: '3.47.6'
+  GO_VERSION: '1.27.1'
+  IS_STABLE: ${{ !contains(github.ref, '-') }}
+  SUFFIX: ubuntu20.04
+  # appimagetool is itself an AppImage and a container exposes no FUSE.
+  APPIMAGE_EXTRACT_AND_RUN: '1'
+
+jobs:
+  build:
+    name: Linux amd64
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:20.04
+      options: --user root
+    permissions:
+      contents: read
+    steps:
+      # Nothing is preinstalled in the bare image, and actions/checkout needs git,
+      # so the toolchain comes first.
+      - name: Install the 20.04 toolchain
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake file git libblkid-dev libfuse2 libgtk-3-dev \
+            liblzma-dev libayatana-appindicator3-dev libsecret-1-dev ninja-build \
+            patchelf pkg-config rpm sudo unzip wget xz-utils zip ca-certificates curl
+          git config --global --add safe.directory '*'
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      # The Core and Helper build hooks shell out to cargo, which the hosted
+      # images happen to ship and this container does not.
+      - name: Setup Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+            sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: false
+
+      - name: Get Flutter Dependency
+        run: |
+          flutter --version
+          flutter pub get
+
+      # The core embeds this bundle and FlClashHttpOverrides.trustCoreRoots loads it for Dart.
+      # Pinned by hash, so a new bundle from https://curl.se/docs/caextract.html is a reviewed bump.
+      - name: Fetch CA certificates
+        shell: bash
+        env:
+          CA_BUNDLE: cacert-2026-09-25.pem
+          CA_BUNDLE_SHA256: a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+        run: |
+          bundle=core/Clash.Meta/component/ca/ca-certificates.crt
+          curl -fsSL --retry 3 -o "$bundle" "https://curl.se/ca/$CA_BUNDLE"
+          echo "$CA_BUNDLE_SHA256  $bundle" | sha256sum -c -
+
+      - name: Setup
+        run: dart setup.dart linux ${{ env.IS_STABLE == 'true' && '--env stable' || '' }} -v
+
+      - name: Suffix the packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in dist/*; do
+            [ -f "$file" ] || continue
+            name=$(basename "$file")
+            mv "$file" "dist/${name%.*}-${SUFFIX}.${name##*.}"
+          done
+          ls -l dist
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifact-linux-amd64-${{ env.SUFFIX }}
+          path: ./dist
+          overwrite: true
+
+  release:
+    name: Publish
+    needs: build
+    if: ${{ (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-pre.')) || inputs.release_tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download
+        uses: actions/download-artifact@v4
+        with:
+          name: artifact-linux-amd64-${{ env.SUFFIX }}
+          path: dist
+
+      - name: Generate sha256
+        working-directory: dist
+        run: sha256sum ./* > SHA256SUMS-${{ env.SUFFIX }}
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: dist/*
+          fail_on_unmatched_files: true
