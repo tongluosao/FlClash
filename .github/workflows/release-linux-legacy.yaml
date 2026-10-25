@@ -45,9 +45,9 @@ jobs:
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential cmake file git libblkid-dev libfuse2 libgtk-3-dev \
-            liblzma-dev libayatana-appindicator3-dev libsecret-1-dev ninja-build \
-            patchelf pkg-config rpm sudo unzip wget xz-utils zip ca-certificates curl
+            build-essential ca-certificates cmake curl fakeroot file git jq libblkid-dev \
+            libfuse2 libgtk-3-dev liblzma-dev libayatana-appindicator3-dev libsecret-1-dev \
+            locate ninja-build patchelf pkg-config rpm sudo unzip wget xz-utils zip
           git config --global --add safe.directory '*'
 
       - name: Checkout
@@ -64,10 +64,15 @@ jobs:
       # The Core and Helper build hooks shell out to cargo, which the hosted
       # images happen to ship and this container does not.
       - name: Setup Rust
+        env:
+          # HOME is /github/home while the container runs as root, so rustup needs
+          # both paths spelled out to land them somewhere stable.
+          CARGO_HOME: /github/home/.cargo
+          RUSTUP_HOME: /github/home/.rustup
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
             sh -s -- -y --profile minimal --default-toolchain stable
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
