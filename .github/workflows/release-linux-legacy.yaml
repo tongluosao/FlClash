@@ -82,6 +82,9 @@ jobs:
                 path: /opt/sqlite-src/sqlite3.c
                 additional_includes:
                   - /opt/sqlite-src
+                # Linux is the one target the hook leaves unlinked against libm.
+                additional_libraries:
+                  - m
           EOF
           sed -i '/^  user_defines:$/r /tmp/sqlite-defines.yaml' pubspec.yaml
           grep -c 'path: /opt/sqlite-src/sqlite3.c' pubspec.yaml
@@ -176,17 +179,20 @@ jobs:
       - name: Verify the glibc floor
         shell: bash
         run: |
-          set -euo pipefail
+          set -uo pipefail
           floor=2.31
           status=0
           checked=0
           while IFS= read -r library; do
-            highest=$(readelf --version-info "$library" 2>/dev/null |
-              grep -o 'GLIBC_[0-9]\+\.[0-9]\+' | sed 's/^GLIBC_//' | sort -uV | tail -n 1)
-            [ -n "$highest" ] || continue
+            # A library without version references makes grep exit 1, which
+            # pipefail would otherwise turn into a silent step failure.
+            versions=$(readelf --version-info "$library" 2>/dev/null |
+              grep -o 'GLIBC_[0-9]\+\.[0-9]\+' || true)
+            [ -n "$versions" ] || continue
             checked=$((checked + 1))
+            highest=$(printf '%s\n' "$versions" | sed 's/^GLIBC_//' | sort -uV | tail -n 1)
             if [ "$(printf '%s\n%s\n' "$highest" "$floor" | sort -V | tail -n 1)" != "$floor" ]; then
-              echo "FAIL $(basename "$library") needs GLIBC_$highest"
+              echo "FAIL $library needs GLIBC_$highest"
               status=1
             fi
           done < <(find build -path '*release/bundle*' -name '*.so*' -type f)
