@@ -97,7 +97,7 @@ jobs:
           for cache in "${PUB_CACHE:-}" "$HOME/.pub-cache" /root/.pub-cache; do
             [ -n "$cache" ] && [ -d "$cache" ] || continue
             while IFS= read -r file; do
-              sed -i 's=g_autoptr(GPtrArray) links = g_steal_pointer(=g_autoptr(GPtrArray) links = (GPtrArray*) g_steal_pointer(=' "$file"
+              sed -i 's|g_autoptr(GPtrArray) links = g_steal_pointer(|g_autoptr(GPtrArray) links = (GPtrArray*) g_steal_pointer(|' "$file"
               grep -q '(GPtrArray\*) g_steal_pointer' "$file"
               patched=$((patched + 1))
             done < <(find "$cache" -path '*app_links_linux-*/linux/app_links_plugin_linux.cc' -type f)
