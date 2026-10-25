@@ -99,6 +99,8 @@ jobs:
           [ -n "$steal_header" ] || { echo 'no header defines g_steal_pointer'; exit 1; }
           cat >> "$steal_header" <<'EOF'
 
+          #ifndef FLCLASH_GLIB_COMPAT_STEAL_POINTER
+          #define FLCLASH_GLIB_COMPAT_STEAL_POINTER 1
           #ifdef __cplusplus
           template <typename T>
           static inline T * flclash_steal_pointer (T **pp)
@@ -110,10 +112,14 @@ jobs:
           #undef g_steal_pointer
           #define g_steal_pointer(pp) flclash_steal_pointer (pp)
           #endif
+          #endif
           EOF
           cat >> /usr/include/glib-2.0/glib/gspawn.h <<'EOF'
 
+          #ifndef FLCLASH_GLIB_COMPAT_SPAWN
+          #define FLCLASH_GLIB_COMPAT_SPAWN 1
           #define g_spawn_check_wait_status(status, error) g_spawn_check_exit_status (status, error)
+          #endif
           EOF
           grep -c flclash_steal_pointer "$steal_header"
           grep -c g_spawn_check_wait_status /usr/include/glib-2.0/glib/gspawn.h
